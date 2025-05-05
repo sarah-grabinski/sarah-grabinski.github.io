@@ -1,0 +1,917 @@
+---
+title: "Gone Too Young: The Impact of Food, Sleep, and Income on Premature Mortality"
+author: "Sarah Grabinski"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook:
+    highlight: kate
+    number_sections: TRUE
+    code_folding: show
+    code_download: TRUE
+---
+
+
+
+# Preliminaries
+
+## My Packages
+
+```{r global_options, message = FALSE, cache = FALSE}
+# RMarkdown Packages
+library(knitr)
+library(rmdformats)
+
+# Global options
+options(max.print="150"); opts_chunk$set(comment=NA); opts_knit$set(width=75)
+```
+
+```{r load_packages, message = FALSE}
+# Packages used in this project
+library(broom)
+library(equatiomatic)
+library(patchwork)
+library(ggrepel)
+library(kableExtra)
+library(janitor)
+library(naniar)
+library(tidyverse)
+
+# Set theme for plots
+theme_set(theme_bw())
+```
+
+## Data Ingest
+
+This project uses the 2022 CHR CSV Analytic Data from the [County Health Rankings](https://www.countyhealthrankings.org/explore-health-rankings/rankings-data-documentation).
+
+```{r data_ingest, message = FALSE}
+data_url <- 
+  "https://www.countyhealthrankings.org/sites/default/files/media/document/analytic_data2022.csv"
+
+# Read in CSV from the URL, skip the header row, use up to 4000 rows
+# to guess column types, do not show the guessed column types
+chr_2022_raw <- read_csv(data_url, skip = 1, guess_max = 4000, 
+                         show_col_types = FALSE)
+```
+
+# Data Development
+
+## Selecting My Data
+
+I filtered my data for ranked counties in the states of Ohio, Florida, Illinois, and Tennessee and selected my variables of interest. I gave them more meaningful names than the original v-codes, scaled the proportions to percentages, and scaled the income to thousands of dollars.
+
+```{r selecting_data}
+chr_2022 <- chr_2022_raw |>
+  # Use only ranked counties from Ohio, Florida, Illinois, and Tennessee
+  filter(county_ranked == 1,
+         state %in% c('OH', 'FL', 'IL', 'TN')) |>
+  # Select the raw variables
+  select(fipscode, state, county, county_ranked,
+         v127_rawvalue, # premature death / years of life lost
+         v139_rawvalue, # proportion of county experiencing food insecurity
+         v143_rawvalue, # proportion of county experiencing insufficient sleep
+         v168_rawvalue, # proportion of county that has completed high school
+         v063_rawvalue # median income of county in dollars
+         ) |>
+  # Give the variables new, meaningful names
+  rename(years_lost = v127_rawvalue, # outcome
+         food_insecurity = v139_rawvalue, # quantitative predictor 1
+         insufficient_sleep = v143_rawvalue, # quantitative predictor 2
+         hs_completion_raw = v168_rawvalue, # binary predictor
+         median_income_raw = v063_rawvalue, # categorical predictor
+         ) |>
+  # Re-scale variables where necessary
+  mutate(food_insecurity = food_insecurity * 100, # converts to %
+         insufficient_sleep = insufficient_sleep * 100, # converts to %
+         hs_completion_raw = hs_completion_raw * 100, # converts to %
+         # converts to thousands of $
+         median_income_raw = median_income_raw / 1000) 
+```
+
+## Repairing the `fipscode` and factoring the `state`
+
+The fips code is a 5-digit identifier that was converted to a numeric variable on import. I repaired it by adding back any leading zeros that were stripped, and I converted the state to a factor.
+
+```{r repair_fips_factor_state}
+chr_2022 <- chr_2022 |>
+  mutate(fipscode = str_pad(fipscode, 5, pad = "0"),  # repair the fips code
+         # factorize state and make Ohio the baseline
+         state = fct_relevel(factor(state), 'OH', 'IL', 'FL', 'TN'))
+```
+
+## Creating a Binary Categorical Variable
+
+I created a tibble of all ranked counties in the US to use in establishing the categorical variables levels based on national averages.
+
+```{r chr_US_tibble}
+# Create a tibble of all ranked counties in the US
+chr_2022_ranked <- chr_2022_raw |>
+  filter(county_ranked == 1) |>
+  # Select the raw variables
+  select(fipscode, state, county, county_ranked,
+         v127_rawvalue, # premature death / years of life lost
+         v139_rawvalue, # proportion of county experiencing food insecurity
+         v143_rawvalue, # proportion of county experiencing insufficient sleep
+         v168_rawvalue, # proportion of county that has completed high school
+         v063_rawvalue # median income of county in dollars
+         ) |>
+  # Give the variables new, meaningful names
+  rename(years_lost = v127_rawvalue, # outcome
+         food_insecurity = v139_rawvalue, # quantitative predictor 1
+         insufficient_sleep = v143_rawvalue, # quantitative predictor 2
+         hs_completion_raw = v168_rawvalue, # binary predictor
+         median_income_raw = v063_rawvalue, # categorical predictor
+         ) |>
+  # Re-scale variables where necessary
+  mutate(food_insecurity = food_insecurity * 100, # converts to %
+         insufficient_sleep = insufficient_sleep * 100, # converts to %
+         hs_completion_raw = hs_completion_raw * 100, # converts to %
+         # converts to thousands of $
+         median_income_raw = median_income_raw / 1000)
+```
+
+From the tibble of all ranked US counties, I calculated the national median high school completion percentage (`us_median_hs_completion` = 88.78%) from `hs_completion_raw` and used this as a cut point to establish 'Above Average' and 'Below Average' high school completion categories for my sample.
+
+```{r create_binary_category, message = FALSE}
+# Calculate the median high school completion percentage
+us_median_hs_completion = median(chr_2022_ranked$hs_completion_raw)
+
+# Use this value to split variable into above and below average categories
+chr_2022 <- chr_2022 |>
+  mutate(hs_completion_cat = factor(case_when(
+    hs_completion_raw < us_median_hs_completion ~ "Below Average",
+    TRUE ~ "Above Average"))) |>
+  # Reorder the the levels based on median value
+  mutate(hs_completion_cat = fct_reorder(hs_completion_cat, 
+                                         hs_completion_raw, median))
+
+# Summarize the categories
+mosaic::favstats(data = chr_2022, hs_completion_raw ~ hs_completion_cat) |>
+  mutate(percent = scales::percent(n/nrow(chr_2022), accuracy = 0.1)) |>
+  select(hs_completion_cat, n, percent, median, mean, min, max) |>
+  kbl(col.names = c('Category', 'n', 'Percent', 'Median', 
+                    'Mean', 'Minimum', 'Maximum'), 
+      digits = 2, align = 'c', 
+      caption = 'Percentage High School Completion by Category') |>
+  kable_classic(full_width = FALSE)
+```
+
+## Creating a Multi-Category Variable
+
+From the tibble of all US ranked counties, I calculated tertiles from `median_income_raw` and used these cut points (`cut1` = 50.397 thousands of dollars, `cut2` = 60.754 thousands of dollars) to establish 'Low', 'Average', and 'High' median income categories.
+
+```{r create_multi_category}
+# Use the previously made tibble of all ranked US counties 
+# to calculate cut points for 3 equal quantiles
+cut1 = quantile(chr_2022_ranked$median_income_raw, 
+              probs = 0.333, na.rm = TRUE, names = FALSE)
+
+cut2 = quantile(chr_2022_ranked$median_income_raw, 
+              probs = 0.667, na.rm = TRUE, names = FALSE)
+
+# Use these cut points to split column into low, average, and high categories
+chr_2022 <- chr_2022 |>
+  mutate(median_income_cat = factor(case_when(
+    median_income_raw < cut1 ~ "Low",
+    median_income_raw < cut2 ~ "Average",
+    TRUE ~ "High"))) |>
+  # Reorder the levels based on median value
+  mutate(median_income_cat = fct_reorder(median_income_cat, 
+                                         median_income_raw, median))
+
+# Summarize the categories
+mosaic::favstats(data = chr_2022, median_income_raw ~ median_income_cat) |>
+  mutate(percent = scales::percent(n/nrow(chr_2022), accuracy = 0.1))  |>
+  select(median_income_cat, n, percent, median, mean, min, max) |>
+  kbl(col.names = c('Category', 'n', 'Percent', 'Median', 
+                    'Mean', 'Minimum', 'Maximum'), 
+      digits = 3, align = 'c', 
+      caption = 'Median Household Income by Category') |>
+  kable_classic(full_width = FALSE)
+```
+
+## Revise order of variables
+
+I relocated the `county_ranked` column to the end of the tibble so that the primary variables print more clearly. I also applied `clean_names()` to ensure I had unique and clearly formatted variable names.
+
+```{r revise_variable_order}
+# Move county_ranked to the end and make sure column names are clean
+chr_2022 <- chr_2022 |>
+  relocate(county_ranked, .after = last_col()) |>
+  clean_names()
+```
+
+## Three Important Checks
+
+### Missingness
+
+None of my variables are missing any values, so my data set meets the requirement that it must have data for at least 75% of the counties in each state.
+
+```{r missingness_check}
+# Use naniar to summarize missing values
+chr_2022 |> 
+  miss_var_summary() |>
+  mutate(pct_miss = scales::percent(1-pct_miss)) |>
+  kbl(col.names = c('Variable', '# Missing', '% Complete'), 
+      align = c('l', 'c', 'c'), 
+      caption = 'Missingness Summary') |>
+  kable_classic(full_width = FALSE, 'striped')
+```
+
+### Distinctiveness
+
+My variables have between 113 and 352 distinct values each, so my data set meets the requirement of having at least 10 distinct non-missing values per variable.
+
+```{r distinctiveness_check}
+# Count distinct cases for all variables
+chr_2022 |> 
+  summarise(across(years_lost:median_income_raw, ~ n_distinct(.))) |>
+  kbl(caption = 'Number of Distinct Values', 
+      align = c('c', 'c', 'c', 'c', 'c')) |>
+  kable_classic(full_width = FALSE)
+  
+```
+
+### Category Factor Completeness
+
+The categories of my categorical variables have between 116 and 176 counties per level, so my data set meets the requirement that every level of the factor for categorical variables must include at least 10 counties.
+
+```{r category_check}
+# Use tabyl to count the counties per binary category level
+chr_2022 |> tabyl(hs_completion_cat) |>
+  adorn_pct_formatting() |>
+  kbl(col.names = c('High School Completion Category', 
+                    '# of Counties', 'Percent'), align = 'lcc') |>
+  kable_classic(full_width = FALSE)
+  
+# Use tabyl to count the counties per multi category level
+chr_2022 |> tabyl(median_income_cat) |>
+  adorn_pct_formatting(digits = 1) |>
+  kbl(col.names = c('Median Income Category', '# of Counties', 'Percent'), 
+      align = 'lcc') |>
+  kable_classic(full_width = FALSE)
+```
+
+# Our Analytic Tibble
+
+## Printing My Tibble
+
+Below is my final tibble containing 352 counties and 11 variables.
+
+```{r print_tibble}
+chr_2022
+```
+
+## Summarizing My Tibble
+
+Below is a summary of my final tibble, containing 352 counties and 11 variables, which confirms that I have no missing variables and a sufficient number of distinct raw values. Additional information about these variables, whose names will not change during the course of this project, can be found in the code book.
+
+```{r summarize_tibble}
+Hmisc::describe(chr_2022, descript = 'Summary of chr_2022')
+```
+
+## Saving My Tibble
+
+Finally, I saved my tibble as `chr_2022_SarahGrabinski.Rds` in my project.
+
+```{r save_tibble}
+saveRDS(chr_2022, file = 'chr_2022_SarahGrabinski.Rds')
+```
+
+# Codebook
+
+## Table of States with County Counts
+
+I selected states based on whether the state was a toss-up, safely Democrat, or safely Republican based on ratings from [Ballotpedia's compilation of forecasts](https://ballotpedia.org/Presidential_battleground_states_2020) for the 2020 election to try and balance my sample for policy choices that affect health outcomes. I selected Florida, Illinois, and Tennessee in addition to Ohio because they had a large number of counties each and a similar number of counties to each other, such that no state was unevenly represented in my sample. This selection also had distributions which closely matched the nationwide distribution for most variables, which improves the internal and external validity of my models.
+
+State | Postal Abbreviation | Political Leaning 
+--------- | ------------------|---------
+Ohio | OH | Lean Republican
+Florida | FL | Toss Up
+Tennessee | TN | Safely Republican
+Illinois | IL | Safely Democrat
+
+```{r state_tabyl}
+# Use tabyl to summarize counties by state
+chr_2022 |>
+  tabyl(state) |>
+  adorn_totals() |>
+  adorn_pct_formatting() |>
+  kbl(col.names = c('State', 'Number of Counties', 'Percent'), 
+      align = 'ccc') |>
+  kable_classic(full_width = FALSE, 'striped')
+```
+
+## Table of Variables, Descriptions and Roles
+
+Variable | v Code | Description | Analytic Role | Missing
+----------|----------|-----------|-----------|----------
+fipscode | -- | 5-digit state+county identifier | ID | 0
+county | -- | name of county | --| 0
+state | -- | postal abbreviation of state | -- | 0
+years_lost | v127 | years of potential life lost (YPLL) before age 75 per 100k population per year (age-adjusted) | outcome | 0
+food_insecurity | v139 | % of population who lack adequate access to food | quantitative predictor | 0
+insufficient_sleep | v143 | % of adults reporting fewer than 7 hrs of sleep on average (age-adjusted) | quantitative predictor | 0
+hs_completion_raw | v168 | % of adults 25+ with high school diploma or equivalent | -- | 0
+hs_completion_cat | v168 | Above Average (>= 88.8%), Below Average (< 88.8%)* | binary predictor | 0
+median_income_raw | v063 | median household income in thousands of dollars | -- | 0
+median_income_cat | v063 | Low (< 50.4), Average (50.4-60.8), High (> 60.8), in thousands of dollars** | multi-categorical predictor | 0
+county_ranked | -- | whether the county is ranked | -- | 0
+
+*Median high school completion percentage for all US counties
+
+**Based on 3 tertiles of median income across all US counties
+
+## Details on my Variables from CHR
+
+Additional details on my chosen variables can be found via [the summaries linked on the County Health Rankings site](https://www.countyhealthrankings.org/explore-health-rankings/measures-data-sources/2020-measures). 
+
+- **Outcome variable**: `years_lost` was originally `v127_rawvalue` and is listed in the Length of Life subcategory under Health Outcomes at County Health Rankings. It is a rate which quantifies the number of years of potential life lost (YPLL) before age 75 per 100,000 people per year. It is based on the sum of all years lost before age 75 from 2018-2020 according to the National Center for Health Statistics Mortality Files divided by the total population of the county during that time, and it was age-adjusted using the 2000 census data.
+
+- **Quantitative Predictor 1**: `food_insecurity` was originally `v139_rawvalue` and is listed in the Diet and Exercise subcategory of the Health Behaviors category under Health Factors at County Health Rankings. It estimates the proportion of county residents who lack adequate access to food, including the ability to provide balanced meals, as determined by Map The Meal Gap project. It was multiplied by 100 to convert it from a proportion to a percentage. Data from 2019 was used in the Core Food Insecurity Model, which pulls information from the Community Population Survey, Bureau of Labor Statistics, and American Community Survey.
+
+- **Quantitative Predictor 2**: `insufficient_sleep` was originally `v143_rawvalue` and is listed in the Other Health Behaviors subcategory of the Health Behaviors category under Health Factors at County Health Rankings. It estimates the proportion of county residents who report sleeping less than 7 hours per night on average. It was multiplied by 100 to convert it from a proportion to a percentage. It is calculated using 2018 Behavioral Risk Factor Surveillance System survey results and modeled by the PLACES project using data for the American Community Survey. It is age-adjusting using the 2000 census data.
+
+- **Binary Predictor**: `hs_completion_raw` was originally `v168_raw_value` and is listed in the Education subcategory of the Social & Economic Factors category under Health Factors at County Health Rankings. This measure is the proportion of adults ages 25+ with a high school diploma or equivalent and is calculated from 2016-2020 American Community Survey data. It was multiplied by 100 to convert it from a proportion to a percentage and split into two categories to become `hs_completion_cat`. The raw value was split into 'Above Average' and 'Below Average' categories using the median high school completion percentage for all US counties, 88.8%. 
+
+- **Multi-Categorical Predictor**: `median_income_raw` was originally `v063_raw_value`.  This measure is the median household income, or the income where half of households in a county earn more and half of households earn less. It is based on 2020 data and modeling from the US Census Bureau using American Community Survey data. It was divided by 1000 to represent income in thousands of dollars and was split into three categories to become `median_income_cat`. The raw value was split into three tertiles using the distribution of median household incomes across all US counties. 'Low' median household incomes are less than \$50,397, 'Average' median household incomes range from \$50,398 to \$60,754, and 'High' median household incomes are greater than \$60,755.
+
+# Biggest Challenge
+
+The most challenging part of my proposal was organization. I was having difficulty ensuring I completed all tasks when following the sample proposal. To me, and probably by design, it seemed less like a template and more like a road map. I also wanted my proposal to appear like a report so I could potentially add it to my portfolio. I finished variable selection and the coding portion of the proposal prior to the early submission deadline. I found myself spending a great deal of subsequent time trying to scroll back and forth to make sure I had completed all the tasks in various locations. Eventually, your advice to not spend more than 15' on a problem kicked in. I stopped working and took a step back. I ignored all my code and created an outline of my proposal based only on the requirements. Once I was satisfied with the order, it took me very little time compared to how much I would have spent with my previous strategy to complete and check my work. My biggest concern remaining was that by deviating from the sample proposal, I made the requirements too difficult to find, even though it made more sense to me arranged like this. 
+
+For this final project, I rearranged everything to match the sample.
+
+# Analysis 1
+
+## The Variables
+
+The predictive variable I chose for this analysis is the percentage of residents experiencing food insecurity (`food_insecurity`), which estimates the proportion of residents in each county who lack adequate access to food or the ability to provide balanced meals. The outcome I will predict is the rate of premature mortality (`years_lost`) in years of potential life lost before the age of 75 per 100,000 people per year (YPLL). Neither `food_insecurity` nor `years_lost` is missing data for any of the 352 counties in Ohio, Florida, Illinois, and Tennessee. Although no data is missing, I will use a tibble called `model1_data` that contains only `fipscode`, `state`, `county`, `years_lost`, and `food_insecurity` for simplicity's sake. 
+
+In Cuyahoga County, Ohio, the rate of premature mortality is 431.16 years of potential life lost before age 75 per 100,000 people per year, and the CHR estimates that 13.9% of residents experience food insecurity.
+
+```{r variables_model1}
+# Create a limited data set for model 1
+model1_data <- chr_2022 |>
+  select(fipscode, state, county, years_lost, food_insecurity)
+
+# Identify and display the values for Cuyahoga County
+model1_data |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, years_lost, food_insecurity) |>
+  kbl(col.names = c('State', 'County', 'years_lost', 'food_insecurity'), 
+      align = 'llcc', digits = 2) |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Research Question
+
+Since lack of consistent access to food is linked to negative health outcomes, as the percentage of residents experiencing food insecurity increases in 352 counties in Ohio, Illinois, Tennessee, and Florida, at what rate does the county's risk of premature mortality, as assessed by years of potential life lost before the age of 75 per 100,000 people per year, also increase?
+
+## Data Visualization
+
+There is a positive relationship between the percentage of county residents experiencing food insecurity (predictor) and the years of potential life lost before age 75 (YPLL) per 100,000 people per year (outcome), such that as the prevalence of food insecurity increases by 1%, the risk of premature mortality increases by approximately 75 YPLL per 100,000 people per year. There is not an obvious pattern with regards to the state in which a county resides. A linear model is appropriate here as the LOESS curve closely approximates the linear fitted line. The points are also closely clustered along the length of both models. There is one significant outlier (Union County, Florida), which is about 300 YPLL above the next highest value.
+
+```{r model1_data_vis}
+ggplot(model1_data, aes(x = food_insecurity, y = years_lost)) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  scale_color_viridis_d(name = 'State') + 
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  geom_label_repel(data = filter(model1_data, years_lost > 1000),
+             aes(x = food_insecurity, y = years_lost,
+                 label = paste(county, state, sep = ', '))) +
+  labs(x = '% of County Residents Experiencing Food Insecurity', 
+       y = 'YPLL Per 100,000 People Per Year', 
+       title = 
+         'Predicting Premature Mortality Rate by Food Insecurity Prevalence',
+       subtitle = paste("Pearson r = ", 
+                         round_half_up(cor(model1_data$food_insecurity, 
+                                           model1_data$years_lost),
+                                       3)),
+       caption = 'YPLL = years of potential life lost before age 75') +
+  theme(legend.position = c(0.1, 0.7),
+        legend.background = element_rect(fill = "white", color = "black"))
+```
+
+
+## Transformation Assessment
+
+The most promising transformation was the log of YPLL. A Box-Cox plot for my 3 predictors (`food_insecurity`, `median_income_cat`, `insufficient_sleep`) versus my outcome (`years_lost`) recommended a power transformation of approximately lambda = 0.5, which is the square root and not an available option. The estimate of lambda ranged from 0 to 1, indicating the next best options were to use a log transformation or to not transform at all. As seen below, the loess curve tracks the linear curve for the transformed data, although less well than for the untransformed data. Using this transformation also did not violate any of the assumptions about the residuals of linear models. I decided not to use a transformation of my outcome because without noticeable cost to fit, using the untransformed data produces a more easily interpreted model for my audience. Communication is a key component of the 'Conclusion' step of the PPDAC cycle, so I have prioritized simplicity at little cost to the model for the sake of my audience's understanding.
+
+```{r model1_transformation}
+ggplot(model1_data, aes(x = food_insecurity, y = log(years_lost))) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  geom_smooth(formula = y ~ x, method = 'lm', se = FALSE, col = 'red') +
+  geom_smooth(formula = y ~ x, method = 'loess', se = FALSE, col = 'blue') +
+  geom_label_repel(data = filter(model1_data, years_lost > 1000),
+             aes(x = food_insecurity, y = log(years_lost),
+                 label = paste(county, state, sep = ', '))) +
+  scale_color_viridis_d(name = 'State') + 
+  labs(x = '% of County Residents Experiencing Food Insecurity', 
+       y = 'Natural Log of YPLL Per 100,000 People Per Year', 
+       title = 
+         'Predicting Premature Mortality Rate by Food Insecurity Prevalence',
+       subtitle = paste("Pearson r = ", 
+                         round_half_up(cor(model1_data$food_insecurity, 
+                                           log(model1_data$years_lost)),
+                                       3)),
+       caption = 'YPLL = years of potential life lost before age 75') +
+  theme(legend.position = c(0.1, 0.7),
+        legend.background = element_rect(fill = "white", color = "black"))
+```
+
+## The Fitted Model
+
+### The Prediction Equation
+
+This linear model predicts that the years of potential life lost before age 75 per 100,000 people per year is 72.51 YPLL (y-intercept) plus 28.35 times the percentage of county residents experiencing food insecurity.
+
+```{r model1_equation}
+# Create the linear model
+model1 <- lm(years_lost ~ food_insecurity, data = model1_data)
+
+# Extract the equation
+extract_eq(model1, use_coefs = TRUE, coef_digits = 2)
+```
+
+### The Model Coefficients
+
+The y-intercept for this model is 72.51 YPLL (90% CI: 46.09-98.92) with a standard error of 16.02 YPLL and the slope is 28.35 YPLL per percent of residents experiencing food insecurity (90% CI: 26.40-30.30) with a standard error of 1.18 YPLL per percent of residents experiencing food insecurity.
+
+```{r model1_tidy_coefficients}
+# Use tidy to extract the estimates, SE, and a 90% CI for model coefficients
+tidy(model1, conf.int = TRUE, conf.level = 0.9) |>
+  select(term, estimate, std.error, conf.low, conf.high) |>
+  kbl(col.names = c('Term', 'Estimate', 'Std. Error', 
+                    '90% CI Low', '90% CI High'), 
+      digits = 2, align = 'lcccc', 
+      caption = 'Model Coefficients') |>
+  kable_classic(full_width = FALSE)
+```
+
+### Summaries of Model Fit
+
+The correlation between food insecurity and premature mortality rate is 0.788. Using 352 counties to predict YPLL by the prevalence of food insecurity, the variance in food insecurity explains 62.1% (R^2^ = 0.621) of the variation in premature mortality rate. The residual standard error of this model is 63.95 years of potential life lost before age 75 per 100,000 people per year.
+
+```{r model1_glance}
+# Use glance to extract R2, RSE, and # of counties from model1
+glance(model1) |>
+  select(r.squared, sigma, nobs) |>
+  # Take the square root of R-squared to calculate Pearson's r
+  mutate(correlation = sqrt(r.squared)) |>
+  kbl(col.names = c('R-Squared', 'Residual Std Error', 
+                    '# of Counties', 'Correlation'), 
+      digits = c(3, 2, 0, 3), align = 'c', 
+      caption = 'Model Fit Summaries') |>
+  kable_classic(full_width = FALSE)
+```
+
+## Residual Analysis
+
+This model conforms to all the assumptions of a linear model. The regression relationship is linear as no curve forms when plotting the residuals against the fitted values. Although there are a few outliers not well predicted by the model, the regression residuals overall show similar variance across all levels of the fitted values with no meaningful pattern. Finally, minus a few outliers at the extremes, the residuals are well described by a normal model as demonstrated by the Q-Q plot.
+
+```{r model1_residuals}
+# Augment model1 with the original data
+model1_aug <- augment(model1, data = model1_data)
+
+p1 <- ggplot(model1_aug, aes(x = .fitted, y = .resid)) +
+  geom_point(color = 'lightslategrey', alpha = 0.5) +
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  labs(x = 'Fitted Values of YPLL', 
+       y = 'Residual Values of YPLL', 
+       title = 'Residual vs Fitted Values of YPLL',
+       caption = 'YPLL = years of potential life lost before age 75')
+
+p2 <- ggplot(model1_aug, aes(sample = .resid)) +
+  geom_qq(color = 'lightslategrey', alpha = 0.5) +
+  geom_qq_line() +
+  labs(x = 'Expected Quantile', 
+       y = 'Actual Value', 
+       title = 'Q-Q Plot')
+
+p1 + p2
+```
+
+
+For Cuyahoga County, Ohio, the fitted model value of 466.58 YPLL reasonably approximates the actual value of 431.16 YPLL with a residual of -35.41 YPLL.
+
+```{r model1_cuyahoga}
+# Select and display Cuyahoga County's stats from the augmented model
+model1_aug |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, years_lost, .fitted, .resid) |>
+  kbl(col.names = c('State', 'County', 'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llccc', 
+      caption = 
+        'Cuyahoga County, OH - Years of Premature Life Lost') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+Unsurprisingly, the county predicted least well by this model is Union County, Florida with a residual of 512.20 YPLL. The second worst prediction by this model is for Athens County, Ohio with a residual of -215.81 YPLL.
+
+```{r model1_topcounties}
+# Select and display the 2 counties with the worst residuals
+model1_aug |>
+  arrange(desc(abs(.resid))) |>
+  select(state, county, years_lost, .fitted, .resid) |>
+  head(2) |>
+  kbl(col.names = c('State', 'County', 'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llccc', 
+      caption = 
+        'Least Successfully Fitted Counties') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Conclusions and Limitations
+
+It has been demonstrated that the lack of consistent access to food is associated with negative health outcomes, so this model sought to determine the degree to which premature mortality risk increases, as measured by years of potential life lost before age 75 per 100,000 people per year, with each increase in the percentage of county residents who experience food insecurity. This model indicates a positive relationship between the two measures and predicts that with a 1% increase in the prevalence of food insecurity in a county, the premature mortality rate will increase by 26.40-30.30 YPLL per 100,000 people per year. Using a risk ratio calculation, this amounts to a 4-15% increase in risk with every 1% increse in food insecurity prevalence. The y-intercept is non-negative (90% CI: 46.09-98.92), which suggests that eliminating food insecurity would not eliminate the risk of premature mortality.
+
+A key limitation of this model is that the prevalence of food insecurity in a county is a modeled value based on survey responses, poverty, unemployment, home ownership, and disability prevalence measures at the state level. Self-reported data may not accurately represent the true nature of my sample, and the assumptions that produce this model may not hold for counties with small populations, which both limit the inferences which can be drawn about the sample from this data. In fact, of the top 10 worst predicted counties, Athens County is the only county with a population greater than 20,000. My sample is not truly random, which threatens internal validity, although the distribution of food insecurity prevalence does match the nationwide distribution. Additionally, poverty is used to estimate food insecurity in the original model. Poverty is strongly associated with premature mortality, so this relationship may indicate a confounding variable rather than a true association.
+
+# Analysis 2
+
+## The Variables
+
+The predictive variable I chose for this analysis is the median household income (`median_income_cat`), divided into 'Low', 'Average', and 'High' tertiles, which estimates the median household income of residents in each county. The outcome I will predict is the rate of premature mortality (`years_lost`) in years of potential life lost (YPLL) before the age of 75 per 100,000 people per year. Neither `median_income_cat` nor `years_lost` is missing data for any of the 352 counties in Ohio, Florida, Illinois, and Tennessee. Although no data is missing, I will use a tibble called `model2_data` that contains only `fipscode`, `state`, `county`, `years_lost`, and `median_income_cat` for simplicity’s sake. In Cuyahoga County, Ohio, the rate of premature mortality is 431.16 years lost per 100,000 people per year, and the median household income is $55,128.
+
+```{r variables_model2}
+# Create a limited data set for model 2
+model2_data <- chr_2022 |>
+  select(fipscode, state, county, years_lost, 
+         median_income_cat, median_income_raw)
+
+# Identify and display the values for Cuyahoga County
+model2_data |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, years_lost, median_income_raw, median_income_cat) |>
+  kbl(col.names = c('State', 'County', 'years_lost', 
+                    'Raw Median Income', 'Income Category'), 
+      align = 'llccc', digits = 2) |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Research Question
+
+Knowing poverty's negative impact on health outcomes, among 352 counties in Ohio, Illinois, Florida, and Tennessee, do counties with lower median household incomes disproportionately bear the costs of premature mortality, as measured by years of premature life lost before age 75 per 100,000 people per year, or does this effect persist in counties with average median incomes as well?
+
+## Data Visualization
+
+There is a negative relationship between the median household income (predictor) and the years of potential life lost before age 75 (YPLL) per 100,000 people per year (outcome), such that as the median household income increases, the risk of premature mortality decreases. There is a great deal of overlap, so the observed differences may not be meaningful. Values are approximately normally distributed within each category, and the categories appear to have similar variances, therefore using a linear model would be appropriate. There is one significant outlier (Union County, Florida), which is about 300 YPLL above the next highest value.
+
+```{r model2_data_vis}
+ggplot(model2_data, aes(x = years_lost, y = median_income_cat)) +
+  geom_violin(aes(fill = median_income_cat), alpha = 0.5) +
+  geom_boxplot(width = 0.3, notch = TRUE) +
+  stat_summary(fun = "mean", geom = "point", 
+               shape = 23, size = 3, fill = "white") +
+  scale_fill_viridis_d(name = 'Median Income') +
+  geom_label_repel(data = filter(model2_data, years_lost > 1000),
+             aes(x = years_lost, y = median_income_cat,
+                 label = paste(county, state, sep = ', ')), nudge_y = 0.25) +
+  labs(x = 'YPLL per 100,000 people per year', 
+       y = 'Median Household Income', 
+       title = 'Premature Mortality Rates by Median Household Income',
+       caption = 'YPLL = years of potential life lost before age 75') +
+  guides(fill = 'none')
+```
+
+
+## The Fitted Model
+
+### The Prediction Equation
+
+After fitting a linear model, the years of potential life lost before age 75 per 100,000 people per year is predicted to be 537.69 YPLL for counties with a low median income, 94.72 years lower than the low median income or 442.97 YPLL for counties with average median incomes, and 177.93 years lower than the low median income or 359.76 YPLL for counties with high median incomes.
+
+```{r model2_equation}
+# Create the linear model
+model2 <- lm(years_lost ~ median_income_cat, data = model2_data)
+
+# Extract the equation
+extract_eq(model2, use_coefs = TRUE, wrap = TRUE, 
+           terms_per_line = 1, coef_digits = 2, operator_location = 'start',
+           swap_var_names = c('median_income_cat' = 'median_income'))
+```
+
+### The Model Coefficients
+
+The intercept, representing YPLL for low median incomes, is predicted to be 537.69 (90% CI: 526.48-548.89). The coefficient for the average median income category is predicted to be 94.72 YPLL lower than that for low median incomes, resulting in a predicted value of 442.97 YPLL (90% CI: 426.82-458.88). The coefficient for the high median income category is predicted to be 177.93 YPLL lower than that for low median incomes, resulting in a predicted value of 359.76 YPLL (90% CI: 343.82-375.71).
+
+```{r model2_coefficients}
+# Use tidy to extract the term, estimate, std error, and 90% CI from model2
+tidy(model2, conf.int = TRUE, conf.level = 0.9) |>
+  select(term, estimate, std.error, conf.low, conf.high) |>
+  kbl(col.names = c('Term', 'Estimate', 'Std. Error', 
+                    '90% CI Low', '90% CI High'), 
+      digits = 2, align = 'lcccc', 
+      caption = 'Model Coefficients') |>
+  kable_classic(full_width = FALSE)
+```
+
+### Summaries of Model Fit
+
+The correlation between the median income category and premature mortality rate is 0.702. Using 352 counties to predict YPLL by whether the county has a low, average, or high median household income, median income explains 49.3% (R^2^ = 0.493) of the variation in premature mortality rate. The residual standard error of this model is 74.1 years of potential life lost before age 75 per 100,000 people per year.
+
+```{r model2_glance}
+# Use glance to select the R-squared, residual SE, and # of counties
+glance(model2) |>
+  select(r.squared, sigma, nobs) |>
+  # Take the square root of R-squared to calculate Pearson's r
+  mutate(correlation = sqrt(r.squared)) |>
+  kbl(col.names = c('R-Squared', 'Residual Std Error', 
+                    '# of Counties', 'Correlation'), 
+      digits = c(3, 2, 0, 3), align = 'c', 
+      caption = 'Model Fit Summaries') |>
+  kable_classic(full_width = FALSE)
+```
+
+## Prediction Analysis
+
+### Residual Plot
+
+This model conforms to all the assumptions of a linear model. Linearity is not relevant for a categorical model, but besides Florida's outlying county, the residuals show similar variance across all levels of the fitted values with no meaningful pattern. Finally, minus the outlier, the residuals are well described by a normal model across all levels as demonstrated by the Q-Q plot.
+
+```{r model2_residuals}
+# Augment model2 with the original data
+model2_aug <- augment(model2, data = model2_data)
+
+# Set seed to prevent the jitter from moving
+set.seed(4212022)
+
+p1 <- ggplot(model2_aug, aes(x = jitter(.fitted), y = .resid)) +
+  geom_boxplot(aes(group = median_income_cat), width = 10, 
+               outlier.shape = NA) + 
+  geom_point(aes(col = median_income_cat), alpha = 0.25) +
+  scale_color_viridis_d(name = 'Median Income') +
+  geom_label_repel(data = filter(model2_aug, years_lost > 1000),
+                   aes(x = jitter(.fitted), y = .resid, 
+                       label = paste(county, state, sep = ', ')), 
+                   nudge_x = -6, min.segment.length = 1) +
+  labs(x = 'Fitted Values', 
+       y = 'Residual Values', 
+       title = 'Fitted vs Residual Values',
+       subtitle = 'by Median Income') +
+  guides(color = 'none')
+
+p2 <- ggplot(model2_aug, aes(sample = .resid)) +
+  geom_qq(aes(color = median_income_cat), alpha = 0.25) +
+  geom_qq_line() +
+  scale_colour_viridis_d() +
+  facet_wrap(~ median_income_cat, ncol = 1) +
+  labs(x = 'Expected Quantile', 
+       y = 'Actual Value', 
+       title = 'Q-Q Plot by Median Income') +
+  guides(color = 'none')
+
+p1 + p2
+```
+
+
+### Prediction for Cuyahoga County, OH
+
+For Cuyahoga County, Ohio, which has an average median household income, the fitted model value of 442.96 approximates well the actual value of 431.16 YPLL with a residual of -11.8 YPLL.
+
+```{r model2_cuycounty}
+# Select and display Cuyahoga County's stats from the augmented model
+model2_aug |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, median_income_cat, years_lost, .fitted, .resid) |>
+  kbl(col.names = c('State', 'County', 'Income Category', 
+                    'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llcccc', 
+      caption = 
+        'Cuyahoga County, OH - Years of Premature Life Lost') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+### My Two Least Successfully Fit Counties
+
+Once again, the county predicted least well by this model is Union County, Florida with a residual of 469.45 YPLL. The second worst prediction by this model is for Jasper County, Illinois with a residual of -192.25 YPLL.
+
+```{r model2_worstfit}
+# Select and display the 2 counties with the worst residuals
+model2_aug |>
+  arrange(desc(abs(.resid))) |>
+  select(state, county, years_lost, .fitted, .resid) |>
+  head(2) |>
+  kbl(col.names = c('State', 'County', 'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llccc', 
+      caption = 
+        'Least Successfully Fitted Counties') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Conclusions and Limitations
+
+Given that poverty is known to negatively impact health outcomes, this model sought to determine if counties with lower median household incomes among 352 counties in Ohio, Illinois, Florida, and Tennessee disproportionately bear the costs of premature mortality as compared to those counties with average median incomes and high median incomes. The model predicted 90% confidence intervals for the mean years of potential life lost before age 75 per 100,000 people per year, a measure of risk. Using risk ratio calculations, counties with low median incomes have a 14.7-28.9% increased risk of premature mortality as compared to those with average median incomes, and counties with average median incomes have a 13.6-33.5% increased risk of premature mortality compared to those with high median incomes. These are not meaningfully different levels of risk, so based on this model, counties with low median incomes do not experience disproportionate risk of premature mortality.
+
+As with Analysis 1, a key limitation of this model is that the median household income of a county is a modeled value. The assumptions used in that model may not hold for counties with small populations. Union County, Florida is again the worst fitted county in my model, followed by Jasper County, Illinois with a population of 9,698. Another limitation of this model is that the median income calculation does not include income from capital gains, which are highly concentrated in wealthy counties, or public assistance or welfare payments, which are concentrated in poorer counties. This measure may underestimate the true resources of those at the top and overestimate those of the bottom of the distribution of median incomes, threatening the inferences we can draw about our sample from the data. My sample is also not truly random, which threatens internal validity, although the distribution of incomes does match the nationwide distribution. 
+
+# Analysis 3
+
+## The Variables
+
+The predictive variables for this analysis are the percentage of residents getting insufficient sleep (`insufficient_sleep`), which estimates the proportion of residents getting less than 7 hours of sleep per night, and the `state` of the county. The outcome I will predict is the rate of premature mortality (`years_lost`) in years of potential life lost (YPLL) before the age of 75 per 100,000 people per year. Neither `insufficient_sleep`, `state`, nor `years_lost` is missing data for any of the 352 counties in Ohio, Florida, Illinois, and Tennessee. Although no data is missing, I will use a tibble called `model3_data` that contains only `fipscode`, `state`, `county`, `years_lost`, and `insufficient_sleep` for simplicity's sake. In Cuyahoga County, Ohio, the rate of premature mortality is 431.16 years lost per 100,000 people per year, and the CHR estimates that 44.85% of residents get less than 7 hours of sleep per night.
+
+```{r model3_variables}
+# Create a limited data set for model 3
+model3_data <- chr_2022 |>
+  select(fipscode, state, county, years_lost, insufficient_sleep)
+
+# Identify and display the values for Cuyahoga County
+model3_data |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, years_lost, insufficient_sleep) |>
+  kbl(col.names = c('State', 'County', 'years_lost', 'insufficient_sleep'), 
+      align = 'llcc', digits = 2) |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Research Question
+
+Given the known negative health consequences of the lack of sleep, how many additional years of potential life lost per 100,000 people are attributable to an increase in the prevalence of insufficient sleep amongst residents of 352 counties in Ohio, Illinois, Florida, and Tennessee, and does this relationship differ based on the state in which the county is located?
+
+## Data Visualization
+
+When the data is considered in aggregate, there is a positive relationship between the percentage of county residents getting less than 7 hours of sleep per night (predictor) and the years of potential life lost before age 75 (YPLL) per 100,000 people per year (outcome), such that as the percentage of residents getting insufficient sleep increases by 1%, the YPLL increases by 20 years. Illinois counties cluster separately from Ohio, Florida, and Tennessee, and the YPLL and insufficient sleep values for Tennessee counties are higher on average than the other states, so including state as a variable in this model is appropriate. When states are considered individually, the positive relationship holds, but the increase in premature mortality rate per increase in percentage of residents getting insufficient sleep seems to vary slightly, with Tennessee changing the least and Illinois appearing to change the most. A linear model is appropriate here as the LOESS curve closely approximates the linear fitted line for all states, and points are closely clustered along the length of the curves. An interaction term should be use because the slope of the fitted line seems to change by state. There is still one significant outlier, Union County, Florida, which is about 300 YPLL above the next highest value.
+
+```{r model3_data_vis}
+p1 <- ggplot(model3_data, aes(x = insufficient_sleep, y = years_lost)) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  guides(color = 'none') +
+  scale_color_viridis_d() +
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  geom_label_repel(data = filter(model3_data, years_lost > 1000),
+             aes(x = insufficient_sleep, y = years_lost,
+                 label = paste(county, state, sep = ', ')),
+             nudge_x = -2) +
+  labs(x = '% of residents getting insufficient sleep', 
+       y = 'YPLL per 100,000 people per year', 
+       title = 'Premature Mortality Rate', 
+       subtitle = 'vs Percent Getting Insufficient Sleep', 
+       caption = 'YPLL = years of potential life lost before age 75')
+
+p2 <- ggplot(model3_data, aes(x = insufficient_sleep, y = years_lost)) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  facet_wrap(~state) +
+  guides(color = 'none') +
+  scale_color_viridis_d() +
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  labs(x = '% of residents getting insufficient sleep', 
+       y = 'YPLL per 100,000 people per year', 
+       title = 'Premature Mortality Rate', 
+       subtitle = 'vs Insufficient Sleep by State', 
+       caption = 'Insufficient sleep = less than 7 hours per night')
+
+p1 + p2
+```
+
+## The Fitted Model
+
+### The Prediction Equation
+
+The equation for the fitted model is -834.66 YPLL minus 31.24 times the percentage of residents getting insufficient sleep for the baseline state of Ohio, minus 107.87 YPLL plus 6.92 times the percent of residents getting insufficient sleep from the Ohio baseline equation for Illinois, minus 233.77 YPLL plus 6.7 times the percent of residents getting insufficient sleep from the Ohio baseline equation for Florida, and minus 317.65 YPLL minus 6.21 times the percent of residents getting insufficient sleep from the Ohio baseline equation for Tennessee.
+
+Simplified, the equation for Illinois is -942.53 YPLL plus 38.16 times the percentage of residents getting insufficient sleep.
+
+```{r model3_equation}
+# Create the linear model with an interaction term
+model3 <- lm(years_lost ~ insufficient_sleep * state, data = model3_data)
+
+# Extract the equation
+extract_eq(model3, use_coefs = TRUE, wrap = TRUE, coef_digits = 2, 
+           operator_location = 'start', terms_per_line = 1)
+```
+
+
+### The Model Coefficients
+
+For Ohio, the y-intercept is -834.66 YPLL (90% CI: -1068.1 - -601.23) and the slope is 31.24 YPLL per percent of residents with insufficient sleep (90% CI: 25.48-37.0). For Illinois, the y-intercept is -942.53 YPLL (90% CI: -1,294.8 - -590.25) and the slope is 38.16 YPLL per percent of residents with insufficient sleep (90% CI: 28.68-47.64). For Florida, the y-intercept is -1,068.43 YPLL (90% CI: -1,408.16 - -728.71) and the slope is 37.94 YPLL per percent of residents with insufficient sleep (90% CI: 29.64-46.43). For Tennessee, the y-intercept is -517.66 YPLL (90% CI: -874.32 - -159.7) and the slope is 25.03 YPLL per percent of residents with insufficient sleep (90% CI: 16.38-33.68). The confidence intervals for coefficients for all states besides Ohio include zero, so lines fitted for other states may not be meaningfully different from Ohio's.
+
+```{r model3_tidy}
+# Use tidy to extract the estimates, SE, and a 90% CI for model coefficients
+tidy(model3, conf.int = TRUE, conf.level = 0.9) |>
+  select(term, estimate, std.error, conf.low, conf.high) |>
+  kbl(col.names = c('Term', 'Estimate', 'Std. Error', 
+                    '90% CI Low', '90% CI High'), 
+      digits = 2, align = 'lcccc', 
+      caption = 'Model Coefficients') |>
+  kable_classic(full_width = FALSE, 'striped')
+```
+
+
+### Summaries of Model Fit
+
+The correlation between the percentage of county residents getting less than 7 hours of sleep per night and the years of potential life lost before the age of 75 per 100,000 people per year is 0.776. Using 352 counties to predict the premature mortality rate by the prevalence of insufficient sleep, the variance in this prevalence explains 60.3% (R^2^ = 0.603) of the variation in premature mortality rate. The residual standard error of this model is 66.07 YPLL.
+
+```{r model3_glance}
+# Use glance to extract R2, RSE, and # of counties from model3
+glance(model3) |>
+  select(r.squared, sigma, nobs) |>
+  mutate(correlation = sqrt(r.squared)) |>
+  kbl(col.names = c('R-Squared', 'Residual Std Error', 
+                    '# of Counties', 'Correlation'), 
+      digits = c(3, 2, 0, 3), align = 'c', 
+      caption = 'Model Fit Summaries') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Residual Analysis
+
+This model conforms to all the assumptions of a linear model. The regression relationship is linear as no curve forms when plotting the residuals against the fitted values. The regression residuals overall show similar variance across all levels of the fitted values with no meaningful pattern. Finally, minus the major outlier from Florida, the residuals are well described by a normal model as demonstrated by the Q-Q plots by state.
+
+```{r model3_residuals}
+# Augment model1 with the original data
+model3_aug <- augment(model3, data = model3_data)
+
+p1 <- ggplot(model3_aug, aes(x = .fitted, y = .resid)) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  scale_color_viridis_d() + 
+  guides(color = 'none') + 
+  labs(x = 'Fitted Values of YPLL', 
+       y = 'Residual Values of YPLL', 
+       title = 'Residual vs Fitted Values of YPLL', 
+       caption = 'YPLL = years of potential life lost before age 75')
+
+p3 <- ggplot(model3_aug, aes(x = .fitted, y = .resid)) +
+  geom_point(aes(color = state), alpha = 0.5) +
+  geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, col = 'red') +
+  geom_smooth(method = 'loess', formula = y ~ x, se = FALSE, col = 'blue') +
+  scale_color_viridis_d() + 
+  guides(color = 'none') + 
+  facet_wrap(~ state) +
+  labs(x = 'Fitted Values of YPLL', 
+       y = 'Residual Values of YPLL', 
+       title = 'Residual vs Fitted Values of YPLL', 
+       caption = 'YPLL = years of potential life lost before age 75')
+
+p2 <- ggplot(model3_aug, aes(sample = .resid)) +
+  geom_qq(aes(color = state), alpha = 0.5) +
+  geom_qq_line() +
+  scale_color_viridis_d(name = 'State') + 
+  facet_wrap(~ state) + 
+  guides(color = 'none') + 
+  labs(x = 'Expected Quantile', 
+       y = 'Actual Value', 
+       title = 'Q-Q Plot by State')
+
+p1 + p2
+
+p3 + p2
+```
+
+This model does not do well predicting the premature mortality rate in Cuyahoga County, Ohio by the percentage of residents experiencing insufficient sleep. The model's fitted value is 566.54 YPLL as compared to the actual value of 431.16 YPLL, a residual of -135.37 YPLL.
+
+```{r model3_cuycounty}
+# Select and display Cuyahoga County's stats from the augmented model
+model3_aug |>
+  filter(state == 'OH', county == 'Cuyahoga County') |>
+  select(state, county, years_lost, .fitted, .resid) |>
+  kbl(col.names = c('State', 'County', 'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llccc', 
+      caption = 
+        'Cuyahoga County, OH - Years of Premature Life Lost') |>
+  kable_classic(full_width = FALSE)
+```
+
+Once again, Union County, Florida is the county with the least successful fitted value, with a residual of 386.64 YPLL. Broward County, Florida  comes in second with a residual of -190.81 YPLL.
+
+```{r model3_worstfit}
+# Select and display the 2 counties with the worst residuals
+model3_aug |>
+  arrange(desc(abs(.resid))) |>
+  select(state, county, years_lost, .fitted, .resid) |>
+  head(2) |>
+  kbl(col.names = c('State', 'County', 'Actual', 'Fitted', 'Residual'), 
+      digits = 2, align = 'llccc', 
+      caption = 
+        'Least Successfully Fitted Counties') |>
+  kable_classic(full_width = FALSE)
+```
+
+
+## Conclusions and Limitations
+
+Research shows that lack of sleep has a negative health impacts, so this model sought to quantify the additional burden in premature mortality rate, as measured by years of premature life lost before age 75 per 100,000 people per year, borne by residents of 352 counties in Ohio, Illinois, Florida, and Tennessee that have a higher percentage of residents who get less than 7 hours of sleep per night. This model predicts that a 1% increase in the prevalence of insufficient sleep is associated with an increase in premature mortality rate of 16.38-47.64 YPLL. Differences between state models may be due to chance since 90% confidence intervals all contain 0. States with lower baseline premature mortality burdens (Illinois, Florida, Ohio) tend to have a greater increase in risk of premature mortality (4-23%) with an increase in the prevalence of insufficient sleep than states with higher baseline premature mortality burdens (Tennessee; 2-16%), so public health initiatives on sleep may be less effective in populations already experiencing high premature mortality rates. This model and the food insecurity model from Analysis 1 both account for about 60% of the variation in premature mortality rates, and a 1% increase in predictor prevalence equates to an increase of about 30 YPLL in both. This model has negative y-intercepts (-1408.16 - -159.7 YPLL) while Analysis 1 predicts a positive baseline premature mortality rate (46.09-98.92 YPLL) regardless of the prevalence of food insecurity. Addressing lack of sleep may be cheaper and easier than addressing food insecurity, so based on the R^2^, slope, and y-intercepts of this model, it predicts that reductions in the prevalence of insufficient sleep could be equally or more effective in reducing premature mortality risk than reducing food insecurity.
+
+This model poses challenges to each level of inductive inference as outlined in Chapter 3 of The Art of Statistics by David Spiegelhalter (2021). One limitation of this model is that the prevalence of insufficient sleep is based on self-reporting, so this measure may not accurately reflect the true value of our sample. A second is that sample was not chosen at random. I did not randomly select counties, but also the survey establishing insufficient sleep is conducted by land-line phone dialing, which could bias our sample in favor of older adults who tend to get less sleep. Both threaten internal validity. Additionally, the sample has a higher density of counties with high prevalence of insufficient sleep as compared to the US distribution, so it has limited external validity.
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
+

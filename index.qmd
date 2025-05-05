@@ -1,0 +1,18 @@
+---
+title: "SARAH GRABINSKI"
+about:
+  template: jolla
+  image: profile.jpg
+  links:
+    - icon: github
+      text: Github
+      href: https://github.com/xsarinix
+    - icon: linkedin
+      text: LinkedIn
+      href: https://linkedin.com/in/sarah-grabinski
+    - icon: email
+      text: Email
+      href: mailto:sarah.grabinski@gmail.com
+---
+
+Sarah Grabinski is a student at Case Western Reserve University pursuing a Master's degree in Biostatistics specializing in Genomics and Bioinformatics. She will graduate in August 2023 to pursue work as a biostatistician. She lives outside of Cleveland, Ohio with her partner John, a dog, two cats, and an axolotl. Outside of data science, she loves cooking, soccer, Star Trek, and science fiction novels.
