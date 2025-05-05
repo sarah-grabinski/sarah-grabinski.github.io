@@ -1,0 +1,8 @@
+[1,"==> quarto preview index.qmd --to html --no-watch-inputs --no-browse\n\n"]
+[1,"pandoc \n  to: html\n  output-file: index.html\n  standalone: true\n  title-prefix: SARAH GRABINSKI\n  section-divs: true\n  html-math-method: mathjax\n  wrap: none\n  default-image-extension: png\n  css:\n    - styles.css\n  toc: true\n  \nmetadata\n  document-css: false\n  link-citations: true\n  date-format: long\n  lang: en\n  theme:\n    light: flatly\n    dark: darkly\n  title: SARAH GRABINSKI\n  about:\n    template: jolla\n    image: images/headshot.jpg\n    links:\n      - icon: github\n        text: Github\n        href: 'https://github.com/xsarinix'\n      - icon: linkedin\n        text: LinkedIn\n        href: 'https://linkedin.com/in/sarah-grabinski'\n      - icon: email\n        text: Email\n        href: 'mailto:sarah.grabinski@gmail.com'\n  \n"]
+[1,"Output created: _site\\index.html\n\nTerminating existing preview server...."]
+[1,"DONE\n\n"]
+[1,"Preparing to preview\n"]
+[1,"\n"]
+[1,"Watching files for changes\nBrowse at http://localhost:3936/\n"]
+[1,"GET: /\nWARN: connection closed before message completed\n"]

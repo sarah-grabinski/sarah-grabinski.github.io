@@ -1,0 +1,15 @@
+---
+title: "Publications"
+---
+
+## Publications
+
+Fogerty J, Song P, Boyd P, **Grabinski SE**, Hoang T, Reich A, Cianciolo LT, Blackshaw S, Mumm JS, Hyde DR, Perkins BD. *Notch inhibition promotes regeneration and immunosuppression supports cone survival in a zebrafish model of inherited retinal dystrophy.* J Neurosci. 2022 Jun 6:JN-RM-0244-22. doi: 10.1523/JNEUROSCI.0244-22.2022. Epub ahead of print. PMID: 35672150.
+
+Zagore LL, **Grabinski SE**, Sweet TJ, Hannigan MM, Sramkoski RM, Li Q, Licatalosi DD. *RNA Binding Protein Ptbp2 Is Essential for Male Germ Cell Development.* Mol Cell Biol. 2015 Dec;35(23):4030-42. doi: 10.1128/MCB.00676-15. Epub 2015 Sep 21. PMID: 26391954; PMCID: PMC4628058.
+
+Licatalosi DD, Yano M, Fak JJ, Mele A, **Grabinski SE**, Zhang C, Darnell RB. *Ptbp2 represses adult-specific splicing to regulate the generation of neuronal precursors in the embryonic brain.* Genes Dev. 2012 Jul 15;26(14):1626-42. doi: 10.1101/gad.191338.112. PMID: 22802532; PMCID: PMC3404389.
+
+## Manuscripts
+
+**Grabinski SE**, Perkins BD. *Comparative Analysis of Transcriptional Changes in Zebrafish cep290 and bbs2 mutants by RNA-Seq Reveals Upregulation of Inflammatory and Stress-Related Pathways.* \[Manuscript submitted for publication\]. Ophthalmic Research, Cleveland Clinic.

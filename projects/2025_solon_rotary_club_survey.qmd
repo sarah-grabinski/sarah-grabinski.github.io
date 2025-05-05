@@ -1,0 +1,322 @@
+---
+title: "Solon Rotary Club Engagement"
+subtitle: "Prepared from Survey Results as of 05/02/2025"
+author: "Sarah E. Grabinski"
+date: last-modified
+format: 
+  html:
+    toc: true
+    toc-title: Sections
+    number-sections: true
+    colorlinks: true
+    execute:
+      echo: false
+      message: false
+      warning: false
+    date-format: iso
+    theme: 
+      light: flatly
+      dark: darkly
+---
+
+```{r setup}
+knitr::opts_chunk$set(comment = NA) 
+
+library(foreach)
+library(patchwork)
+library(tidyverse)
+
+theme_set(theme_bw()) 
+```
+
+```{r import}
+path <- 'C:/Users/sarah/OneDrive/Documents/sarah-grabinski.github.io/projects/data/2025.05.02 Rotary Club Survey Results.csv'
+raw_df <- read_csv(path, 
+                   col_names = c('timestamp', 'am8', 'am9', 'am10', 
+                                 'am11', 'pm12', 'pm1', 'pm2', 'pm3', 
+                                 'pm4', 'pm5', 'pm6', 'pm7', 
+                                 'opportunities', 'issues', 'suggestions'), 
+                   skip = 1)
+
+survey <- raw_df |>
+  mutate(id = str_pad(seq(1, nrow(raw_df)), 2, side = 'left', pad = '0')) |>
+  relocate(id)
+```
+
+```{r availability_df}
+names <- colnames(raw_df)[-c(1, 2, 15:17)]
+times <- c('08:00 AM', '09:00 AM', '10:00 AM', '11:00 AM', 
+           '12:00 PM', '01:00 PM', '02:00 PM', '03:00 PM', 
+           '04:00 PM', '05:00 PM', '06:00 PM', '07:00 PM')
+days <- c('Sunday', 'Monday', 'Tuesday', 'Wednesday',
+          'Thursday', 'Friday', 'Saturday')
+
+calculate_counts <- function(d, s) {
+  available <- ifelse(is.na(s), F, 
+                      str_detect(s, d))
+  return(sum(available))
+}
+
+calculate_availability <- function(n, t) {
+  series <- survey[[n]]
+  
+  counts <- foreach(d = days, .combine = 'c') %do% 
+    calculate_counts(d, series)
+  
+  df <- tibble(
+    day = days, 
+    time = t, 
+    count = counts
+  )
+  
+  return(df)
+}
+
+availability <- foreach(n = names, t = times, 
+                        .combine = 'bind_rows') %do% 
+  calculate_availability(n, t) |>
+  mutate(day = fct_relevel(day, days), 
+         time = fct_relevel(time, rev(times)), 
+         count = as.factor(count), 
+         label = fct_collapse(count, 
+                              '0-2' = c('0', '1', '2')
+         )) |>
+  arrange(day, time)
+```
+
+```{r opportunity_df}
+events <- survey |>
+  pull(opportunities) |>
+  lapply(function(x) str_split(x, ';')) |>
+  unlist() |>
+  unique()
+
+count_opportunities <- function(x) {
+  counts <- survey |>
+    mutate(logical = str_detect(opportunities, x)) |> 
+    pull(logical) |>
+    sum()
+  
+  df <- tibble(
+    opportunity = x,
+    count = counts
+  )
+  
+  return(df)
+}
+
+opportunities <- foreach(event = events, 
+                         .combine = 'bind_rows') %do%
+  count_opportunities(event) |>
+  arrange(desc(count)) |>
+  mutate(opportunity = fct_inorder(opportunity), 
+         opportunity = fct_rev(opportunity), 
+         percent = count / nrow(raw_df) * 100)
+```
+
+```{r summary_df}
+ids <- survey[['id']]
+
+compile_summary <- function(x) {
+  days_avail <- survey |>
+    filter(id == x) |>
+    select(id, starts_with(c('am', 'pm'))) |>
+    pivot_longer(-id, names_to = 'time', 
+                 values_to = 'value') |>
+    filter(!is.na(value)) |>
+    pull(value) |>
+    paste0(collapse = ';')
+  
+  df <- tibble(
+    id = x, 
+    available_sun = str_detect(days_avail, 'Sunday'),
+    hours_sun = str_count(days_avail, 'Sunday'),
+    available_mon = str_detect(days_avail, 'Monday'), 
+    hours_mon = str_count(days_avail, 'Monday'),
+    available_tue = str_detect(days_avail, 'Tuesday'), 
+    hours_tue = str_count(days_avail, 'Tuesday'),
+    available_wed = str_detect(days_avail, 'Wednesday'), 
+    hours_wed = str_count(days_avail, 'Wednesday'),
+    available_thu = str_detect(days_avail, 'Thursday'), 
+    hours_thu = str_count(days_avail, 'Thursday'),
+    available_fri = str_detect(days_avail, 'Friday'), 
+    hours_fri = str_count(days_avail, 'Friday'),
+    available_sat = str_detect(days_avail, 'Saturday'),
+    hours_sat = str_count(days_avail, 'Saturday'),
+    available_days = sum(sapply(days, function(x) str_detect(days_avail, x))),
+    available_hours = str_count(days_avail, ';') + 1,
+    opportunities_selected = str_count(survey[survey$id == x, 'opportunities'], ';') + 1
+  )
+  
+  return(df)
+}
+
+summary_df <- foreach(i = ids, .combine = 'bind_rows') %do% 
+  compile_summary(i) |>
+  left_join(survey |> select(id, opportunities, issues, suggestions))
+```
+
+# Introduction
+
+The Solon Rotary Club is aiming to increase member engagement. A 4-question [survey](https://docs.google.com/forms/d/e/1FAIpQLSfo57s1LRE_izB3b5jPXpkaTC3qSbAoRT1nLt9azkLfANcxuQ/viewform?usp=sharing "Rotary Club Survey") was designed to solicit information on member availability and which planned service events have the most interest. Members also had the opportunity to detail scheduling challenges and suggest additional opportunities.
+
+The survey was conducted via Google Forms and distributed to club members via email and WhatsApp on Friday 04/25/2025. The results in this report are based on the responses as of Friday 05/02/2025. A total of `{r} nrow(survey)` out of 26 members (`{r} paste(round(nrow(survey)/26*100, 1), '%', sep = '')`) completed the survey, and all responses were anonymous.
+
+# Respondent Availability
+
+On average, respondents had 4-6 hours of regular availability per week. Below, the number of respondents was totaled by day of the week and the amount of time available.
+
+```{r}
+summary_df |>
+  pivot_longer(starts_with('hours'), names_to = 'day', 
+               names_prefix = 'hours_', values_to = 'hours') |>
+  select(id, day, hours) |>
+  mutate(day = str_to_sentence(substr(day, 0, 2)), 
+         day = fct_relevel(day, 'Su', 'Mo', 'Tu', 
+                           'We', 'Th', 'Fr', 'Sa'), 
+         bin = fct_collapse(factor(hours),
+                            'Not Available' = '0',
+                            # '1-2 Hours' = c('1', '2'),
+                            '1 Hours' = c('1'),
+                            '2 Hours' = c('2'),
+                            '3+ Hours' = c('3', '4', '5', '6', 
+                                           '7', '8', '9', '10', '12'))
+  ) |>
+  ggplot(aes(x = day, fill = bin)) +
+  geom_bar(col = 'black') +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ bin, nrow = 1) +
+  scale_fill_viridis_d(option = 'mako', end = 0.75) +
+  guides(fill = 'none') +
+  scale_y_continuous(breaks = seq(0, 14, by = 2), 
+                     limits = c(0, 12.5)) +
+  theme(text = element_text(face = 'bold'), 
+        legend.title = element_text(hjust = 0.5), 
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(face = 'plain', 
+                                     hjust = 0.5), 
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 9)) +
+  labs(y = 'Number of Respondents',
+       title = 'General Volunteer Availability', 
+       subtitle = str_wrap('Amount of Time Respondents Are Typically Available in an Average Week by Day', 40), 
+       caption = paste('*Based on responses from', nrow(survey), 'club members'))
+```
+
+The days with the fewest respondents available were Sunday, Tuesday, Wednesday, and Saturday. When respondents are available, it is generally for only 1 hour at a time. The most respondents available for 3+ hours was on Mondays and Fridays.
+
+Below, the number of respondents available was totaled by time of day.
+
+```{r availability_fig}
+availability |>
+  mutate(day = fct_relabel(day, function(x) substr(x, 0, 3))) |>
+  ggplot(aes(x = day, y = time, fill = label)) +
+  geom_tile(col = 'grey') +
+  scale_fill_viridis_d(option = 'magma') +
+  scale_x_discrete(position = 'top') +
+  theme(text = element_text(face = 'bold'), 
+        legend.title = element_text(hjust = 0.5), 
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(face = 'plain', 
+                                     hjust = 0.5), 
+        axis.title = element_blank()) +
+  labs(fill = 'Volunteers\nAvailable', 
+       title = 'Overlapping Volunteer Availability', 
+       subtitle = str_wrap('Days & Times Respondents Are Typically Available in an Average Week', 40), 
+       caption = paste('*Based on responses from', nrow(survey), 'club members'))
+```
+
+The two time periods which maximized the number of overlapping available respondents were Mondays from 12:00-5:00pm and Fridays from 8:00am-4:00am, specifically 8:00-11:00am. The next two best windows were Sundays from 1:00-5:00pm and Thursdays from 2:00-6:00pm. Wednesdays from 4:00-6:00pm and Saturdays from 12:00-3:00pm are candidates for shorter windows of time.
+
+# Current Opportunities
+
+Most respondents were excited about 3-5 of the 10 planned service opportunities each.
+
+```{r opportunity_fig}
+opportunities |>
+  mutate(label = paste(round(percent, 1), '%', sep = '')) |>
+  ggplot(aes(x = count, y = opportunity, 
+             fill = opportunity)) +
+  geom_col(col = 'black') +
+  geom_text(aes(label = label), 
+            size = 4, hjust = -0.1) +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(breaks = seq(0, 16, by = 2), 
+                     limits = c(0, 17)) +
+  guides(fill = 'none') +
+  theme(text = element_text(face = 'bold'), 
+        plot.title = element_text(hjust = 0.5), 
+        plot.subtitle = element_text(hjust = 0.5, 
+                                     face = 'plain')) +
+  scale_fill_viridis_d() +
+  labs(x = 'Number of Respondents', y = '',
+       title = 'Current Service Opportunity Engagement',
+       subtitle = str_wrap('Planned Opportunities Respondents Are Most Excited About Participating In', 40),
+       caption = paste('*Based on responses from', nrow(survey), 'club members'))
+```
+
+The most popular planned activity is the First Responder's Dinner, followed closely by A Night at the Races. Respondents also had strong positive responses to our 2 planned senior-focused opportunities: senior center days and CARE senior support days. The bimonthly club meeting was also popular.
+
+Fostering Hope was the planned opportunity with the least engagement. The food pantry at CVIC and the Humble Design Deco Day also did not have high appeal for respondents.
+
+# Challenges Faced
+
+`{r} sum(is.na(survey[['issues']]))` respondents described the issues they have which prevent them from volunteering more often. Below is a summary of those challenges, which have been paraphrased.
+
+-   Opportunities scheduled during work hours
+-   Already have a lot of commitments on the books
+-   Travel conflicts with events
+-   Health issues limiting mobility
+
+# Member Suggestions
+
+`{r} sum(is.na(survey[['suggestions']]))` respondents gave suggestions for additional service opportunities. Below is a summary of those suggestions, which have been paraphrased.
+
+-   More volunteer events in Solon itself
+-   Engage more with first responder organizations
+-   Joint events with local groups (e.g. Benevolent Fund, Italian Club, Athletic Boosters)
+-   Have a table at Solon functions (e.g. Farmer's Market, Spring Festival, Community Park) to recruit new members, network with community, do fundraising/raffles, etc.
+-   Fewer events with more people per event, so the same people aren't doing all the projects
+
+# Insights & Opportunities
+
+## Engagement
+
+The response rate was `{r} paste(round(nrow(survey)/26*100, 1), '%', sep = '')`, or `{r} nrow(survey)` out of 26 members. `{r} 26 - nrow(survey)` members (`{r} paste(round((1 - nrow(survey)/26)*100, 1), '%', sep = '')`) did not respond to the survey. It's hard to draw conclusions from missing data, but this may represent the share of members least likely to participate in volunteer activities. There may be better ways to communicate with members than the current method(s).
+
+-   Insights
+    -   Emails mostly come from personal accounts.
+    -   Members can 'reply-all' to emails.
+    -   Emails don't always have informative subject lines or are chain emails (e.g. "Fw: CVIC - Logistics for April Food Pantry").
+    -   Group chats like WhatsApp can lead to notification fatigue.
+-   Opportunities
+    -   Set up website-based emails (e.g. president\@solonrotary.org, admin\@solonrotary.org) that include "Solon Rotary Club" in the name (e.g. Solon Rotary Club; President, Solon Rotary Club).
+    -   Use Bcc to send emails to Members\@solonrotary.org. Instead, Cc the person in charge of replies.
+    -   Provide a roster of contact information to members.
+    -   Prioritize using Volunteer Mark to communicate volunteer needs to members (in progress).
+
+## Availability
+
+-   Insights
+    -   Monday afternoons and Friday mornings are the weekdays with the most people consistently available. Thursday afternoons were next best.
+    -   Sunday afternoon is the weekend time with the most people consistently available. Saturdays around noon was next best.
+    -   The fewest people are consistently available on Tuesdays, Wednesdays, and Saturdays.
+-   Opportunities
+    -   Scheduling activities immediately after the bimonthly meeting or on off-weeks may be a good way to increase engagement.
+    -   Sunday afternoons and Saturdays around noon may be the easiest time for those with conflicts during the work week.
+    -   Events requiring long time commitments are best held on Sundays, Mondays, Thursdays, and Fridays.
+    -   Avoid scheduling opportunities on Tuesdays and Wednesdays.
+
+## Current Opportunities
+
+-   Insights
+    -   The First Responder Dinner and A Night at the Races are the most popular events currently planned.
+    -   Respondents were excited about the bimonthly meetings.
+    -   Activities supporting seniors were generally popular.
+    -   The CVIC food pantry, Humble Design Deco Day, and Fostering Hope opportunities were the least exciting to respondents.
+-   Opportunities
+    -   Given their popularity, we might look towards doing more one-off events that engage with the community or joining in with existing local events that people are already attending.
+    -   People are excited about volunteer activities involving seniors.
+    -   Given the lack of regular availability on Tuesdays, we may struggle to continue providing volunteers for the food pantry at CVIC.
+    -   We may need to do more to promote opportunities with Humble Design and Fostering Hope or look at alternative ways to engage with these organizations.
+    -   It could be good to find opportunities that are more flexible and/or can be done on one's own schedule, given the challenges people face in finding time.

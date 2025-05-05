@@ -1,0 +1,10 @@
+---
+title: "Projects"
+listing: 
+  id: projects
+  contents: projects
+  type: default
+  sort: 'date'
+---
+
+Please visit my [Github](https://github.com/xsarinix "Github") for work completed during my data analytics bootcamp.

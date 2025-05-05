@@ -1,0 +1,23 @@
+{
+  "about.qmd": {
+    "about.html": "d5f6761a"
+  },
+  "index.qmd": {
+    "index.html": "c28415ce"
+  },
+  "honors.qmd": {
+    "honors.html": "2aad7b1a"
+  },
+  "presentations.qmd": {
+    "presentations.html": "5f67f861"
+  },
+  "projects.qmd": {
+    "projects.html": "29b07529"
+  },
+  "publications.qmd": {
+    "publications.html": "d29f86b5"
+  },
+  "projects/2025_solon_rotary_club_survey.qmd": {
+    "2025_solon_rotary_club_survey.html": "f31dbe4f"
+  }
+}
